@@ -130,6 +130,7 @@ footer { color: var(--muted); font-size: 13px; display: grid; gap: 4px; }
 <style>body{margin:0} img{max-width:100%} [hidden]{display:none!important}</style>
 </head>
 <body>
+
 <div class="wrap">
   <header>
     <span class="label">Price tracker</span>
@@ -146,20 +147,62 @@ footer { color: var(--muted); font-size: 13px; display: grid; gap: 4px; }
   <section class="list" id="list" aria-live="polite">
     <div class="empty" id="empty">
       <strong id="empty-title">Loading prices…</strong>
-      <span id="empty-text">Products appear here once they're added to products.json and the daily check has run.</span>
+      <span id="empty-text">Products appear here once someone adds them below.</span>
     </div>
   </section>
 
+  <form class="add" id="add-form" novalidate>
+    <h2>Add a product</h2>
+    <label class="field"><span>Product link</span>
+      <input type="url" id="add-url" placeholder="https://www.bestbuy.com/site/…" required>
+    </label>
+    <div class="row">
+      <label class="field"><span>Name (optional)</span>
+        <input type="text" id="add-name" maxlength="120" placeholder="Sony WH-1000XM5">
+      </label>
+      <label class="field"><span>Target price (optional)</span>
+        <input type="number" id="add-target" min="0" step="0.01" inputmode="decimal" placeholder="249.99">
+      </label>
+    </div>
+    <label class="field" id="code-field"><span>Invite code (ask whoever shared this page)</span>
+      <input type="password" id="add-code" autocomplete="off" placeholder="Invite code">
+    </label>
+    <div class="actions">
+      <button class="primary" type="submit" id="add-btn">Start watching</button>
+      <span class="status" id="add-status"></span>
+    </div>
+  </form>
+
   <footer>
-    <span>To add a product, edit <span class="mono">products.json</span> in this site's GitHub repository. Each entry is a link, plus an optional name and target price. Saving the file starts a price check straight away.</span>
+    <span>New products get their first price within the hour. After that, prices are checked once a day.</span>
     <span>Prices are read from each store's product page, so a store that changes its layout or blocks automated visits may show "Couldn't read price".</span>
   </footer>
 </div>
 
 <script>
+// Supabase project settings. The publishable (anon) key is meant to be public:
+// the database only lets it read products and call the invite-code functions.
+const SUPABASE_URL = "https://ewgfbmrxabeublisesev.supabase.co";
+const SUPABASE_KEY = "sb_publishable_dCjisFLm-9blSu06oD_Q8Q_NXNdOhSH";
+
 (function () {
   const $ = (id) => document.getElementById(id);
   const listEl = $("list"), emptyEl = $("empty");
+  const CODE_KEY = "price-watch-code";
+  let code = null, rows = [];
+  try { code = localStorage.getItem(CODE_KEY); } catch (e) {}
+
+  const api = async (path, opts = {}) => {
+    const r = await fetch(SUPABASE_URL + "/rest/v1/" + path, {
+      ...opts,
+      headers: { apikey: SUPABASE_KEY, "Content-Type": "application/json", ...(opts.headers || {}) },
+    });
+    const text = await r.text();
+    const body = text ? JSON.parse(text) : null;
+    if (!r.ok) { const err = new Error((body && body.message) || r.statusText); err.status = r.status; throw err; }
+    return body;
+  };
+  const rpc = (fn, args) => api("rpc/" + fn, { method: "POST", body: JSON.stringify(args) });
 
   const money = (v, cur) => {
     if (v == null || isNaN(v)) return "—";
@@ -175,6 +218,7 @@ footer { color: var(--muted); font-size: 13px; display: grid; gap: 4px; }
     return t.toLocaleDateString(undefined, { month: "short", day: "numeric" });
   };
   const host = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch (e) { return ""; } };
+  const num = (v) => (v == null || v === "" || isNaN(Number(v)) ? null : Number(v));
   const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
 
   function spark(history) {
@@ -206,30 +250,27 @@ footer { color: var(--muted); font-size: 13px; display: grid; gap: 4px; }
     svg.append(area, line, dot); return svg;
   }
 
-  function render(data) {
-    const all = data.products || {};
-    const order = (data.order || []).filter((u) => all[u]);
-    for (const u of Object.keys(all)) if (!order.includes(u)) order.push(u);
-    emptyEl.hidden = order.length > 0;
-    if (!order.length) {
+  function render() {
+    listEl.querySelectorAll(".item").forEach((n) => n.remove());
+    emptyEl.hidden = rows.length > 0;
+    if (!rows.length) {
       $("empty-title").textContent = "No products yet.";
-      $("empty-text").textContent = "Add product links to products.json in the GitHub repository. The first prices show up a minute or two after you save it.";
+      $("empty-text").textContent = "Paste a product link below and set the price you'd be happy to pay.";
     }
-    let hits = 0;
-    for (const url of order) {
-      const p = all[url];
-      const price = typeof p.price === "number" ? p.price : null;
-      const prev = typeof p.prevPrice === "number" ? p.prevPrice : null;
-      const target = typeof p.target === "number" ? p.target : null;
+    $("code-field").hidden = !!code;
+    let hits = 0, last = null;
+    for (const p of rows) {
+      const price = num(p.price), prev = num(p.prev_price), target = num(p.target);
       const hit = price != null && target != null && price <= target;
       if (hit) hits++;
+      if (p.last_checked && (!last || p.last_checked > last)) last = p.last_checked;
 
       const card = el("article", "item" + (hit ? " hit" : ""));
       const meta = el("div", "meta");
-      meta.appendChild(el("div", "name", p.name || host(url) || "Untitled product"));
+      meta.appendChild(el("div", "name", p.name || host(p.url) || "Untitled product"));
       const store = el("div", "store");
-      const a = el("a", null, p.store || host(url)); a.href = url; a.target = "_blank"; a.rel = "noopener";
-      store.append(a, document.createTextNode(" · checked " + ago(p.lastChecked).toLowerCase()));
+      const a = el("a", null, p.store || host(p.url)); a.href = p.url; a.target = "_blank"; a.rel = "noopener";
+      store.append(a, document.createTextNode(" · checked " + ago(p.last_checked).toLowerCase()));
       meta.appendChild(store);
       const pills = el("div", "pills");
       if (hit) pills.appendChild(el("span", "pill hit", "At target"));
@@ -238,6 +279,7 @@ footer { color: var(--muted); font-size: 13px; display: grid; gap: 4px; }
         pills.appendChild(el("span", "pill " + (diff < 0 ? "down" : "up"), (diff < 0 ? "▼ " : "▲ ") + money(Math.abs(diff), p.currency) + " (" + pct + "%)"));
       }
       if (p.status === "error") pills.appendChild(el("span", "pill err", "Couldn't read price"));
+      if (price == null && p.status !== "error") pills.appendChild(el("span", "pill", "Waiting for first check"));
       if (target != null) pills.appendChild(el("span", "pill", "Target " + money(target, p.currency)));
       meta.appendChild(pills);
 
@@ -251,20 +293,90 @@ footer { color: var(--muted); font-size: 13px; display: grid; gap: 4px; }
       const hp = (p.history || []).map((h) => h.p).filter((v) => typeof v === "number");
       sp.appendChild(el("span", "range num", hp.length ? "Low " + money(Math.min(...hp), p.currency) + " · High " + money(Math.max(...hp), p.currency) : "No history yet"));
       card.appendChild(sp);
+
+      if (code) {
+        const c = el("div", "controls");
+        const lab = el("label", null, "Target");
+        const inp = el("input"); inp.type = "number"; inp.min = "0"; inp.step = "0.01"; inp.inputMode = "decimal";
+        inp.id = "target-" + p.id; inp.value = target != null ? target : ""; inp.placeholder = "none";
+        lab.appendChild(inp);
+        const save = el("button", null, "Save"); save.type = "button";
+        save.onclick = async () => {
+          const v = inp.value.trim() === "" ? null : Number(inp.value);
+          if (v != null && (isNaN(v) || v < 0)) { inp.focus(); return; }
+          save.disabled = true;
+          try { await rpc("set_target", { code, p_id: p.id, p_target: v }); save.textContent = "Saved"; await load(); }
+          catch (e) { onError(e); save.disabled = false; }
+        };
+        const spacer = el("span", "spacer");
+        const rm = el("button", "quiet", "Remove"); rm.type = "button";
+        rm.onclick = async () => {
+          if (!rm.dataset.armed) {
+            rm.dataset.armed = "1"; rm.textContent = "Tap again to remove"; rm.className = "danger";
+            setTimeout(() => { if (rm.isConnected) { delete rm.dataset.armed; rm.textContent = "Remove"; rm.className = "quiet"; } }, 4000);
+            return;
+          }
+          rm.disabled = true;
+          try { await rpc("remove_product", { code, p_id: p.id }); await load(); }
+          catch (e) { onError(e); rm.disabled = false; }
+        };
+        c.append(lab, save, spacer, rm);
+        card.appendChild(c);
+      }
       listEl.appendChild(card);
     }
-    $("s-count").textContent = order.length;
+    $("s-count").textContent = rows.length;
     $("s-hits").textContent = hits;
-    $("s-last").textContent = ago(data.lastRun);
+    $("s-last").textContent = ago(last);
   }
 
-  fetch("data.json?t=" + Date.now(), { cache: "no-store" })
-    .then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); })
-    .then(render)
-    .catch(() => {
+  function forgetCode() {
+    code = null;
+    try { localStorage.removeItem(CODE_KEY); } catch (e) {}
+    render();
+  }
+  function onError(e) {
+    const st = $("add-status");
+    st.className = "status bad";
+    if (e && /invite code/i.test(e.message)) { forgetCode(); st.textContent = "That invite code didn't work. Enter it again."; $("add-code").focus(); }
+    else if (e && /list is full/i.test(e.message)) st.textContent = "The list is full. Remove a product to add another.";
+    else st.textContent = "Couldn't save. Check your connection and try again.";
+  }
+
+  async function load() {
+    try {
+      rows = await api("products?select=*&order=created_at.asc");
+      render();
+    } catch (e) {
       $("empty-title").textContent = "Couldn't load prices.";
-      $("empty-text").textContent = "data.json is missing or unreadable. Reload the page, or check the latest run in the repository's Actions tab.";
-    });
+      $("empty-text").textContent = "Check your connection and reload the page.";
+    }
+  }
+
+  $("add-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const st = $("add-status"); st.className = "status";
+    const url = $("add-url").value.trim();
+    let u; try { u = new URL(url); } catch (e) { u = null; }
+    if (!u || !/^https?:$/.test(u.protocol)) { st.textContent = "Paste the full product link, starting with https://"; st.className = "status bad"; $("add-url").focus(); return; }
+    const tRaw = $("add-target").value.trim(), target = tRaw === "" ? null : Number(tRaw);
+    if (target != null && (isNaN(target) || target < 0)) { st.textContent = "Target price must be a number, like 249.99"; st.className = "status bad"; return; }
+    const useCode = code || $("add-code").value.trim();
+    if (!useCode) { st.textContent = "Enter the invite code to add products."; st.className = "status bad"; $("add-code").focus(); return; }
+    $("add-btn").disabled = true; st.textContent = "Saving…";
+    try {
+      await rpc("add_product", { code: useCode, p_url: u.href, p_name: $("add-name").value.trim() || null, p_target: target });
+      code = useCode;
+      try { localStorage.setItem(CODE_KEY, code); } catch (e) {}
+      $("add-form").reset();
+      st.textContent = "Added. Its first price shows up within the hour.";
+      await load();
+    } catch (e) { onError(e); }
+    $("add-btn").disabled = false;
+  });
+
+  load();
+  setInterval(() => { if (!document.hidden) load(); }, 5 * 60 * 1000);
 })();
 </script>
 </body>

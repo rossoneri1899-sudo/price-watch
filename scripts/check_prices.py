@@ -1,11 +1,16 @@
-"""Daily price check for Price Watch.
+"""Price check for Price Watch.
 
-Reads products.json, fetches each product page, pulls the price from the
-structured data stores publish for search engines (JSON-LD, microdata or
-Open Graph tags), updates data.json, and emails an alert on drops.
+Reads the products table in Supabase, fetches each product page, pulls the
+price from the structured data stores publish for search engines (JSON-LD,
+microdata or Open Graph tags), saves it back to Supabase, writes a data.json
+backup, and emails an alert on drops.
+
+Runs hourly: products that have never been checked are checked every run,
+and every product is checked once a day (when it's 20+ hours since its last check).
 
 Standard library only, so the GitHub Action needs no installs.
-Email settings come from environment variables (GitHub secrets):
+Settings come from environment variables (GitHub secrets):
+  SUPABASE_URL, SUPABASE_SECRET_KEY
   PRICE_WATCH_GMAIL, PRICE_WATCH_APP_PASS, PRICE_WATCH_TO (optional)
   PRICE_WATCH_SITE (optional, the site link put at the end of emails)
 """
@@ -18,15 +23,14 @@ import smtplib
 import sys
 import urllib.request
 import zlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from pathlib import Path
-from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parent.parent
-PRODUCTS = ROOT / "products.json"
 DATA = ROOT / "data.json"
 MAX_HISTORY = 365
+RECHECK_AFTER = timedelta(hours=20)
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -171,62 +175,83 @@ def send_email(alerts):
     print(f"Alert email sent to {to}.")
 
 
+def supabase(method: str, path: str, body=None):
+    base = os.environ["SUPABASE_URL"].rstrip("/")
+    key = os.environ["SUPABASE_SECRET_KEY"]
+    headers = {"apikey": key, "Content-Type": "application/json", "Prefer": "return=minimal"}
+    if not key.startswith("sb_"):  # legacy service_role JWT keys also need a bearer header
+        headers["Authorization"] = f"Bearer {key}"
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(f"{base}/rest/v1/{path}", data=data, method=method, headers=headers)
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        text = resp.read().decode()
+    return json.loads(text) if text else None
+
+
+def parse_time(value):
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")) if value else None
+    except ValueError:
+        return None
+
+
 def main() -> int:
-    products = json.loads(PRODUCTS.read_text(encoding="utf-8"))
-    data = json.loads(DATA.read_text(encoding="utf-8")) if DATA.exists() else {}
-    old = data.get("products", {})
+    rows = supabase("GET", "products?select=*&order=created_at.asc") or []
     now = datetime.now(timezone.utc)
     today = now.strftime("%Y-%m-%d")
-    out, alerts = {}, []
+    alerts, checked = [], 0
 
-    for p in products:
-        url = (p.get("url") or "").strip()
-        if not url.startswith(("http://", "https://")):
+    for row in rows:
+        last = parse_time(row.get("last_checked"))
+        if row.get("status") != "pending" and last and now - last < RECHECK_AFTER:
             continue
-        rec = dict(old.get(url, {}))
-        rec.update({
-            "url": url,
-            "store": urlparse(url).hostname.removeprefix("www."),
-            "target": p.get("target"),
-            "lastChecked": now.isoformat(timespec="seconds"),
-        })
-        rec.setdefault("history", [])
+        checked += 1
+        url = row["url"]
         try:
             price, cur, found_name = parse_price(fetch(url))
         except Exception as e:  # network errors, blocks, bad encodings
             print(f"FAIL {url}: {e}")
             price, cur, found_name = None, None, None
 
-        rec["name"] = p.get("name") or rec.get("name") or (found_name or "")[:80] or rec["store"]
+        update = {"last_checked": now.isoformat(timespec="seconds")}
+        if not row.get("name") and found_name:
+            update["name"] = html.unescape(found_name).strip()[:120]
         if price is None:
-            rec["status"] = "error"
+            update["status"] = "error"
             print(f"NO PRICE {url}")
         else:
-            prev = rec.get("price")
-            if isinstance(prev, (int, float)):
-                rec["prevPrice"] = prev
-            rec.update({"price": price, "currency": cur or rec.get("currency"), "status": "ok"})
-            hist = rec["history"]
+            prev = row.get("price")
+            prev = float(prev) if prev is not None else None
+            hist = list(row.get("history") or [])
             if hist and hist[-1].get("d") == today:
                 hist[-1]["p"] = price
             else:
                 hist.append({"d": today, "p": price})
-            rec["history"] = hist[-MAX_HISTORY:]
+            update.update({"price": price, "currency": cur or row.get("currency"), "status": "ok",
+                           "history": hist[-MAX_HISTORY:]})
+            if prev is not None:
+                update["prev_price"] = prev
             print(f"OK {url}: {price} {cur or ''}")
 
-            target = p.get("target")
+            target = row.get("target")
+            target = float(target) if target is not None else None
             reasons = []
-            if isinstance(prev, (int, float)) and price < prev:
+            if prev is not None and price < prev:
                 reasons.append("Price dropped")
-            if isinstance(target, (int, float)) and price <= target and not (isinstance(prev, (int, float)) and prev <= target):
+            if target is not None and price <= target and not (prev is not None and prev <= target):
                 reasons.append("Reached your target")
             if reasons:
-                alerts.append({"name": rec["name"], "url": url, "old": prev, "new": price,
-                               "cur": rec.get("currency"), "target": target, "reason": " and ".join(reasons)})
-        out[url] = rec
+                alerts.append({"name": update.get("name") or row.get("name") or row.get("store") or url, "url": url,
+                               "old": prev, "new": price, "cur": update["currency"], "target": target,
+                               "reason": " and ".join(reasons)})
+        supabase("PATCH", f"products?id=eq.{row['id']}", update)
+        row.update(update)
 
-    data = {"lastRun": now.isoformat(timespec="seconds"), "order": [p.get("url") for p in products if p.get("url") in out], "products": out}
-    DATA.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    print(f"Checked {checked} of {len(rows)} products.")
+    if checked:
+        # Backup copy in the repo; the commit also keeps GitHub's scheduled runs active.
+        DATA.write_text(json.dumps({"lastRun": now.isoformat(timespec="seconds"), "products": rows},
+                                   indent=2, ensure_ascii=False, default=str) + "\n", encoding="utf-8")
 
     if alerts:
         try:

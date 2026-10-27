@@ -1,29 +1,32 @@
 # Price Watch
 
-A price tracker that runs on GitHub. A GitHub Action checks every product once a day, saves prices to `data.json`, and emails you when a price drops or reaches your target. GitHub Pages shows the results at `https://<your-username>.github.io/price-watch/`.
+A shared price tracker. Anyone with the link sees the prices; anyone with the invite code can add products, change targets or remove products right on the page. A GitHub Action checks prices, saves them to Supabase, and emails an alert when a price drops or reaches its target. GitHub Pages hosts the page at `https://<your-username>.github.io/price-watch/`.
 
-## Add a product
+## How it fits together
 
-Edit `products.json` (the GitHub app or website works on a phone):
+- `index.html`: the page. It reads products from Supabase with the project's publishable key, which can only read products and call the invite-code functions.
+- `supabase/setup.sql`: the database table and the functions that check the invite code. The code is stored only as a hash.
+- `scripts/check_prices.py`: runs every hour. It checks new products straight away and rechecks every product once a day.
+- `data.json`: a backup copy of the products and prices, saved after each check.
 
-```json
-[
-  { "url": "https://www.example-store.com/product/123", "name": "Noise-cancelling headphones", "target": 249.99 }
-]
-```
-
-`name` and `target` are optional. Saving the file starts a price check straight away.
-
-## Email alerts
+## Secrets
 
 In the repository, go to **Settings → Secrets and variables → Actions → New repository secret** and add:
 
 | Secret | Value |
 | --- | --- |
+| `SUPABASE_URL` | Your project URL, like `https://abcd1234.supabase.co` |
+| `SUPABASE_SECRET_KEY` | The project's secret key (Supabase → Project Settings → API Keys) |
 | `PRICE_WATCH_GMAIL` | The Gmail address that sends alerts |
 | `PRICE_WATCH_APP_PASS` | A Gmail app password (Google Account → Security → App passwords) |
 | `PRICE_WATCH_TO` | Optional: where alerts go. Defaults to the Gmail address |
 
-## Schedule
+## Change the invite code
 
-The check runs at 13:00 UTC. To change it, edit the `cron` line in `.github/workflows/check-prices.yml`. To run it now, open **Actions → Check prices → Run workflow**.
+In the Supabase SQL Editor, run:
+
+```sql
+update private.settings set invite_code_hash = extensions.crypt('NEW-CODE', extensions.gen_salt('bf')) where id = 1;
+```
+
+People who saved the old code on their device are asked for the new one the next time they add something.
