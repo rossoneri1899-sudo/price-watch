@@ -115,6 +115,8 @@ form.add .actions { display: flex; gap: 10px; align-items: center; flex-wrap: wr
 .status { font-size: 13px; color: var(--muted); }
 .status.bad { color: var(--up); }
 footer { color: var(--muted); font-size: 13px; display: grid; gap: 4px; }
+.controls input.email { width: 14em; max-width: 100%; }
+.checkbar {display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin-top: -14px; }
 
 @media (max-width: 520px) {
   .summary .num { font-size: 18px; }
@@ -144,6 +146,11 @@ footer { color: var(--muted); font-size: 13px; display: grid; gap: 4px; }
     <div><span class="label">Last check</span><span class="num" id="s-last" style="font-size:15px">Not yet</span></div>
   </section>
 
+  <div class="checkbar">
+    <button class="primary" type="button" id="check-btn">Check prices now</button>
+    <span class="status" id="check-status" aria-live="polite"></span>
+  </div>
+
   <section class="list" id="list" aria-live="polite">
     <div class="empty" id="empty">
       <strong id="empty-title">Loading prices…</strong>
@@ -164,6 +171,9 @@ footer { color: var(--muted); font-size: 13px; display: grid; gap: 4px; }
         <input type="number" id="add-target" min="0" step="0.01" inputmode="decimal" placeholder="249.99">
       </label>
     </div>
+    <label class="field"><span>Email me when the price drops (optional)</span>
+      <input type="email" id="add-email" autocomplete="email" maxlength="254" placeholder="you@hotmail.com">
+    </label>
     <label class="field" id="code-field"><span>Invite code (ask whoever shared this page)</span>
       <input type="password" id="add-code" autocomplete="off" placeholder="Invite code">
     </label>
@@ -174,7 +184,7 @@ footer { color: var(--muted); font-size: 13px; display: grid; gap: 4px; }
   </form>
 
   <footer>
-    <span>New products get their first price within the hour. After that, prices are checked once a day.</span>
+    <span>Prices update when someone with the invite code taps "Check prices now". A product checked in the last 10 minutes is skipped.</span>
     <span>Prices are read from each store's product page, so a store that changes its layout or blocks automated visits may show "Couldn't read price".</span>
   </footer>
 </div>
@@ -218,6 +228,7 @@ const SUPABASE_KEY = "sb_publishable_dCjisFLm-9blSu06oD_Q8Q_NXNdOhSH";
     return t.toLocaleDateString(undefined, { month: "short", day: "numeric" });
   };
   const host = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch (e) { return ""; } };
+  const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
   const num = (v) => (v == null || v === "" || isNaN(Number(v)) ? null : Number(v));
   const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
 
@@ -322,6 +333,22 @@ const SUPABASE_KEY = "sb_publishable_dCjisFLm-9blSu06oD_Q8Q_NXNdOhSH";
         };
         c.append(lab, save, spacer, rm);
         card.appendChild(c);
+
+        const n = el("div", "controls");
+        const elab = el("label", null, "Email alerts");
+        const em = el("input"); em.type = "email"; em.id = "alert-" + p.id; em.maxLength = 254;
+        em.autocomplete = "email"; em.placeholder = "you@example.com"; em.className = "email";
+        elab.appendChild(em);
+        const sub = el("button", null, "Email me"); sub.type = "button";
+        sub.onclick = async () => {
+          const v = em.value.trim();
+          if (!EMAIL_RE.test(v)) { em.focus(); return; }
+          sub.disabled = true;
+          try { await rpc("add_alert", { code, p_id: p.id, p_email: v }); em.value = ""; sub.textContent = "Signed up"; }
+          catch (e) { onError(e); sub.disabled = false; }
+        };
+        n.append(elab, sub);
+        card.appendChild(n);
       }
       listEl.appendChild(card);
     }
@@ -361,18 +388,55 @@ const SUPABASE_KEY = "sb_publishable_dCjisFLm-9blSu06oD_Q8Q_NXNdOhSH";
     if (!u || !/^https?:$/.test(u.protocol)) { st.textContent = "Paste the full product link, starting with https://"; st.className = "status bad"; $("add-url").focus(); return; }
     const tRaw = $("add-target").value.trim(), target = tRaw === "" ? null : Number(tRaw);
     if (target != null && (isNaN(target) || target < 0)) { st.textContent = "Target price must be a number, like 249.99"; st.className = "status bad"; return; }
+    const email = $("add-email").value.trim();
+    if (email && !EMAIL_RE.test(email)) { st.textContent = "That email address doesn't look right."; st.className = "status bad"; $("add-email").focus(); return; }
     const useCode = code || $("add-code").value.trim();
     if (!useCode) { st.textContent = "Enter the invite code to add products."; st.className = "status bad"; $("add-code").focus(); return; }
     $("add-btn").disabled = true; st.textContent = "Saving…";
     try {
-      await rpc("add_product", { code: useCode, p_url: u.href, p_name: $("add-name").value.trim() || null, p_target: target });
+      await rpc("add_product", { code: useCode, p_url: u.href, p_name: $("add-name").value.trim() || null, p_target: target, p_email: email || null });
       code = useCode;
       try { localStorage.setItem(CODE_KEY, code); } catch (e) {}
       $("add-form").reset();
-      st.textContent = "Added. Its first price shows up within the hour.";
+      st.textContent = "Added. Tap \"Check prices now\" to get its price.";
       await load();
     } catch (e) { onError(e); }
     $("add-btn").disabled = false;
+  });
+
+  $("check-btn").addEventListener("click", async () => {
+    const st = $("check-status"); st.className = "status";
+    const useCode = code || $("add-code").value.trim();
+    if (!useCode) {
+      st.textContent = "Enter the invite code in the form below first.";
+      st.className = "status bad"; $("add-code").focus(); return;
+    }
+    $("check-btn").disabled = true;
+    st.textContent = rows.length ? "Checking " + rows.length + (rows.length === 1 ? " product…" : " products…") + " This can take a minute." : "Checking…";
+    try {
+      const r = await fetch(SUPABASE_URL + "/functions/v1/check-prices", {
+        method: "POST",
+        headers: { apikey: SUPABASE_KEY, "Content-Type": "application/json" },
+        body: JSON.stringify({ code: useCode, site: location.origin + location.pathname }),
+      });
+      const body = await r.json().catch(() => ({}));
+      if (r.status === 403) { forgetCode(); st.textContent = "That invite code didn't work. Enter it again below."; st.className = "status bad"; }
+      else if (!r.ok) { st.textContent = "The price check isn't available right now. Try again later."; st.className = "status bad"; }
+      else {
+        code = useCode;
+        try { localStorage.setItem(CODE_KEY, code); } catch (e) {}
+        const parts = [];
+        if (body.found) parts.push(body.found + " updated");
+        if (body.failed) parts.push(body.failed + " couldn't be read");
+        if (body.skipped) parts.push(body.skipped + " checked recently, skipped");
+        if (body.emailed) parts.push(body.emailed + (body.emailed === 1 ? " alert email" : " alert emails") + " sent");
+        st.textContent = parts.length ? "Done: " + parts.join(", ") + "." : "Nothing to check yet.";
+        await load();
+      }
+    } catch (e) {
+      st.textContent = "Couldn't reach the price check. Check your connection and try again."; st.className = "status bad";
+    }
+    $("check-btn").disabled = false;
   });
 
   load();
