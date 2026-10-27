@@ -183,6 +183,17 @@ footer { color: var(--muted); font-size: 13px; display: grid; gap: 4px; }
     </div>
   </form>
 
+  <form class="add" id="test-form" novalidate>
+    <h2>Test email alerts</h2>
+    <label class="field"><span>Send a test message to make sure alerts reach your inbox</span>
+      <input type="email" id="test-email" autocomplete="email" maxlength="254" placeholder="you@hotmail.com">
+    </label>
+    <div class="actions">
+      <button type="submit" id="test-btn">Send test email</button>
+      <span class="status" id="test-status" aria-live="polite"></span>
+    </div>
+  </form>
+
   <footer>
     <span>Prices update when someone with the invite code taps "Check prices now". A product checked in the last 10 minutes is skipped.</span>
     <span>Prices are read from each store's product page, so a store that changes its layout or blocks automated visits may show "Couldn't read price".</span>
@@ -431,12 +442,41 @@ const SUPABASE_KEY = "sb_publishable_dCjisFLm-9blSu06oD_Q8Q_NXNdOhSH";
         if (body.skipped) parts.push(body.skipped + " checked recently, skipped");
         if (body.emailed) parts.push(body.emailed + (body.emailed === 1 ? " alert email" : " alert emails") + " sent");
         st.textContent = parts.length ? "Done: " + parts.join(", ") + "." : "Nothing to check yet.";
+        if (body.emailError) { st.textContent += " Alert email failed: " + body.emailError; st.className = "status bad"; }
+        else if (body.drops && !body.subscribers) st.textContent += " " + body.drops + (body.drops === 1 ? " price change qualifies" : " price changes qualify") + " for an alert, but nobody signed up for email on " + (body.drops === 1 ? "that product." : "those products.");
         await load();
       }
     } catch (e) {
       st.textContent = "Couldn't reach the price check. Check your connection and try again."; st.className = "status bad";
     }
     $("check-btn").disabled = false;
+  });
+
+  $("test-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const st = $("test-status"); st.className = "status";
+    const to = $("test-email").value.trim();
+    if (!EMAIL_RE.test(to)) { st.textContent = "Enter the email address to test."; st.className = "status bad"; $("test-email").focus(); return; }
+    const useCode = code || $("add-code").value.trim();
+    if (!useCode) { st.textContent = "Enter the invite code in the form above first."; st.className = "status bad"; $("add-code").focus(); return; }
+    $("test-btn").disabled = true; st.textContent = "Sending…";
+    try {
+      const r = await fetch(SUPABASE_URL + "/functions/v1/check-prices", {
+        method: "POST",
+        headers: { apikey: SUPABASE_KEY, "Content-Type": "application/json" },
+        body: JSON.stringify({ code: useCode, testEmail: to, site: location.origin + location.pathname }),
+      });
+      const body = await r.json().catch(() => ({}));
+      if (r.status === 403) { forgetCode(); st.textContent = "That invite code didn't work. Enter it again above."; st.className = "status bad"; }
+      else if (body.ok) {
+        code = useCode;
+        try { localStorage.setItem(CODE_KEY, code); } catch (e) {}
+        st.textContent = "Sent. Check your inbox, and your junk folder if it isn't there in a minute.";
+      } else { st.textContent = "Couldn't send: " + (body.error || "the email service didn't respond."); st.className = "status bad"; }
+    } catch (e) {
+      st.textContent = "Couldn't reach the email service. Check your connection and try again."; st.className = "status bad";
+    }
+    $("test-btn").disabled = false;
   });
 
   load();

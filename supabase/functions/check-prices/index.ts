@@ -134,9 +134,22 @@ function money(v: number | null, cur: string | null) {
   catch { return `${cur ? cur + " " : ""}${v.toFixed(2)}`; }
 }
 
-async function sendAlerts(alerts: Alert[], siteUrl: string | null): Promise<number> {
-  const user = Deno.env.get("GMAIL_ADDRESS"), pass = Deno.env.get("GMAIL_APP_PASSWORD");
-  if (!alerts.length || !user || !pass) return 0;
+const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+
+// Gmail's error text, trimmed; it never contains the password.
+const mailError = (e: unknown) => String((e as Error)?.message ?? e).replace(/\s+/g, " ").slice(0, 300);
+
+function mailer() {
+  const user = Deno.env.get("GMAIL_ADDRESS")?.trim(), pass = Deno.env.get("GMAIL_APP_PASSWORD")?.replace(/\s+/g, "");
+  if (!user || !pass) return null;
+  return { user, transport: nodemailer.createTransport({ host: "smtp.gmail.com", port: 465, secure: true, auth: { user, pass } }) };
+}
+
+type AlertResult = { sent: number; subscribers: number; error: string | null };
+
+async function sendAlerts(alerts: Alert[], siteUrl: string | null): Promise<AlertResult> {
+  const result: AlertResult = { sent: 0, subscribers: 0, error: null };
+  if (!alerts.length) return result;
   const ids = alerts.map((a) => a.id).join(",");
   const subs: { product_id: string; email: string }[] =
     await db(`product_alerts?select=product_id,email&product_id=in.(${ids})`, { headers: { Prefer: "" } });
@@ -145,10 +158,11 @@ async function sendAlerts(alerts: Alert[], siteUrl: string | null): Promise<numb
     const a = alerts.find((x) => x.id === s.product_id);
     if (a) byEmail.set(s.email, [...(byEmail.get(s.email) ?? []), a]);
   }
-  if (!byEmail.size) return 0;
+  result.subscribers = byEmail.size;
+  if (!byEmail.size) return result;
+  const m = mailer();
+  if (!m) { result.error = "GMAIL_ADDRESS or GMAIL_APP_PASSWORD secret is missing"; return result; }
 
-  const mail = nodemailer.createTransport({ host: "smtp.gmail.com", port: 465, secure: true, auth: { user, pass } });
-  let sent = 0;
   for (const [to, list] of byEmail) {
     const lines = list.flatMap((a) => [
       a.name,
@@ -160,15 +174,18 @@ async function sendAlerts(alerts: Alert[], siteUrl: string | null): Promise<numb
     if (siteUrl) lines.push(`Price Watch: ${siteUrl}`);
     lines.push("", "You're getting this because someone signed this address up for price alerts on Price Watch.");
     try {
-      await mail.sendMail({
-        from: `Price Watch <${user}>`, to,
+      await m.transport.sendMail({
+        from: `Price Watch <${m.user}>`, to,
         subject: list.length === 1 ? `Price Watch: ${list[0].name.slice(0, 60)} is now ${money(list[0].now, list[0].currency)}` : `Price Watch: ${list.length} price drops`,
         text: lines.join("\n"),
       });
-      sent++;
-    } catch (e) { console.error("email failed", to.replace(/^(.).*@/, "$1***@"), String(e)); }
+      result.sent++;
+    } catch (e) {
+      result.error = mailError(e);
+      console.error("email failed", to.replace(/^(.).*@/, "$1***@"), result.error);
+    }
   }
-  return sent;
+  return result;
 }
 
 async function checkOne(p: Product, now: Date, alerts: Alert[]): Promise<"ok" | "error"> {
@@ -212,14 +229,34 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   if (req.method !== "POST") return json({ error: "Use POST" }, 405);
 
-  let code = "", siteUrl: string | null = null;
+  let code = "", siteUrl: string | null = null, testEmail = "";
   try {
     const body = await req.json();
     code = String(body.code ?? "");
+    testEmail = String(body.testEmail ?? "").trim();
     if (typeof body.site === "string" && /^https:\/\/[^\s]{1,200}$/.test(body.site)) siteUrl = body.site;
   } catch { /* empty body */ }
   const ok = await db("rpc/verify_code", { method: "POST", body: JSON.stringify({ code }), headers: { Prefer: "" } });
   if (ok !== true) return json({ error: "wrong invite code" }, 403);
+
+  if (testEmail) {
+    if (!EMAIL_RE.test(testEmail) || testEmail.length > 254) return json({ ok: false, error: "That email address doesn't look right." });
+    const m = mailer();
+    if (!m) return json({ ok: false, error: "GMAIL_ADDRESS or GMAIL_APP_PASSWORD secret is missing in Supabase." });
+    try {
+      await m.transport.sendMail({
+        from: `Price Watch <${m.user}>`, to: testEmail,
+        subject: "Price Watch: test email",
+        text: "Email alerts are working. You'll get a message like this when a watched price drops or reaches its target." +
+          (siteUrl ? `
+
+Price Watch: ${siteUrl}` : ""),
+      });
+      return json({ ok: true });
+    } catch (e) {
+      return json({ ok: false, error: mailError(e) });
+    }
+  }
 
   const rows: Product[] = await db("products?select=*&order=created_at.asc", { headers: { Prefer: "" } });
   const now = new Date();
@@ -231,10 +268,10 @@ Deno.serve(async (req) => {
     const results = await Promise.all(due.slice(i, i + CONCURRENCY).map((p) => checkOne(p, now, alerts).catch(() => "error" as const)));
     for (const r of results) r === "ok" ? found++ : failed++;
   }
-  let emailed = 0;
-  try { emailed = await sendAlerts(alerts, siteUrl); } catch (e) { console.error("alerts failed", String(e)); }
+  let mail: AlertResult = { sent: 0, subscribers: 0, error: null };
+  try { mail = await sendAlerts(alerts, siteUrl); } catch (e) { mail.error = mailError(e); }
   return json({
     total: rows.length, checked: due.length, found, failed, skipped: rows.length - due.length,
-    drops: alerts.length, emailed, emailReady: !!(Deno.env.get("GMAIL_ADDRESS") && Deno.env.get("GMAIL_APP_PASSWORD")),
+    drops: alerts.length, emailed: mail.sent, subscribers: mail.subscribers, emailError: mail.error,
   });
 });
