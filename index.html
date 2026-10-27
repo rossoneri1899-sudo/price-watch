@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Price Watch</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: one narrow column of shelf-tag rows; summary strip on top, add form at the bottom. */
+:root {
+  --bg: #f3f5f4;
+  --surface: #ffffff;
+  --ink: #17201d;
+  --muted: #5d6b66;
+  --line: #d8dfdc;
+  --accent: #1f5c4a;
+  --accent-ink: #ffffff;
+  --tag: #ffe36e;
+  --tag-ink: #2a2300;
+  --down: #157a3c;
+  --up: #b4372b;
+  --down-bg: #e2f3e8;
+  --up-bg: #f8e3e0;
+  --font-display: "Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #101513; --surface: #182019; --ink: #e6ece9; --muted: #98a6a0; --line: #2b3632;
+    --accent: #7fcfb2; --accent-ink: #0d1a15; --tag: #e8cc4a; --tag-ink: #1d1800;
+    --down: #6fd394; --up: #f08a7e; --down-bg: #17321f; --up-bg: #3a1c19;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #101513; --surface: #182019; --ink: #e6ece9; --muted: #98a6a0; --line: #2b3632;
+  --accent: #7fcfb2; --accent-ink: #0d1a15; --tag: #e8cc4a; --tag-ink: #1d1800;
+  --down: #6fd394; --up: #f08a7e; --down-bg: #17321f; --up-bg: #3a1c19;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--ink);
+  font: 15px/1.5 var(--font-body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 28px 48px;
+}
+.wrap { max-width: 760px; margin: 0 auto; display: grid; gap: 28px; }
+header { display: grid; gap: 6px; }
+h1 { font: 800 clamp(30px, 7vw, 44px)/1.05 var(--font-display); letter-spacing: -0.02em; margin: 0; text-wrap: balance; }
+h1 .tagmark { background: var(--tag); color: var(--tag-ink); padding: 0 .18em; border-radius: 4px; }
+.sub { color: var(--muted); margin: 0; max-width: 60ch; }
+h2 { font: 600 20px/1.2 var(--font-display); margin: 0; }
+.label { font-size: 11.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 600; }
+.mono, .num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+.summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.summary > div { padding: 12px 14px; display: grid; gap: 2px; min-width: 0; }
+.summary > div + div { border-left: 1px solid var(--line); }
+.summary .num { font-size: 22px; font-weight: 600; }
+
+.list { display: grid; gap: 10px; }
+.item {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px 16px; padding: 14px 16px;
+}
+.item.hit { border-color: var(--down); box-shadow: inset 4px 0 0 var(--down); }
+.item .meta { min-width: 0; display: grid; gap: 4px; }
+.item .name { font-weight: 600; font-size: 16px; overflow-wrap: anywhere; }
+.item .store { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.item .store a { color: inherit; }
+.pills { display: flex; flex-wrap: wrap; gap: 6px; }
+.pill { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+.pill.down { background: var(--down-bg); color: var(--down); border-color: transparent; }
+.pill.up { background: var(--up-bg); color: var(--up); border-color: transparent; }
+.pill.hit { background: var(--down); color: var(--surface); border-color: transparent; }
+.pill.err { background: var(--up-bg); color: var(--up); border-color: transparent; }
+.price { text-align: right; display: grid; gap: 2px; align-content: start; }
+.price .now {
+  font: 600 22px/1.1 var(--font-mono); font-variant-numeric: tabular-nums;
+  background: var(--tag); color: var(--tag-ink); padding: 4px 8px; border-radius: 4px; justify-self: end;
+}
+.price .now.none { background: transparent; color: var(--muted); font-size: 15px; padding: 4px 0; }
+.price .was { font-size: 12.5px; color: var(--muted); }
+.spark { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: end; }
+.spark svg { width: 100%; height: 44px; display: block; }
+.spark .range { font-size: 12px; color: var(--muted); text-align: right; white-space: nowrap; }
+.controls { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; border-top: 1px dashed var(--line); padding-top: 10px; }
+.controls label { font-size: 13px; color: var(--muted); display: flex; gap: 6px; align-items: center; }
+.controls input { width: 7.5em; }
+.controls .spacer { flex: 1; }
+
+input, button { font: inherit; }
+input[type="text"], input[type="url"], input[type="number"] {
+  background: var(--bg); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; min-width: 0;
+}
+input:focus-visible, button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button { cursor: pointer; border-radius: 6px; padding: 7px 14px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); font-weight: 500; }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+button.quiet { border-color: transparent; background: transparent; color: var(--muted); padding: 6px 8px; }
+button.danger { color: var(--up); border-color: var(--up); }
+button:disabled { opacity: .5; cursor: default; }
+
+.empty { border: 1px dashed var(--line); border-radius: 10px; padding: 22px 18px; color: var(--muted); display: grid; gap: 6px; }
+.empty strong { color: var(--ink); }
+
+form.add { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; display: grid; gap: 12px; }
+form.add .row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 12px; }
+form.add .field { display: grid; gap: 4px; min-width: 0; }
+form.add .field span { font-size: 13px; color: var(--muted); }
+form.add .actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.status { font-size: 13px; color: var(--muted); }
+.status.bad { color: var(--up); }
+footer { color: var(--muted); font-size: 13px; display: grid; gap: 4px; }
+
+@media (max-width: 520px) {
+  .summary .num { font-size: 18px; }
+  form.add .row { grid-template-columns: 1fr; }
+  .item { grid-template-columns: minmax(0, 1fr); }
+  .price { text-align: left; grid-auto-flow: column; justify-content: start; align-items: baseline; gap: 10px; }
+  .price .now { justify-self: start; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .item { transition: border-color .2s; }
+}
+</style>
+<style>body{margin:0} img{max-width:100%} [hidden]{display:none!important}</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <span class="label">Price tracker</span>
+    <h1>Price <span class="tagmark">Watch</span></h1>
+    <p class="sub">Products we're watching across online stores. Prices are checked once a day, and an email goes out when one drops or hits its target.</p>
+  </header>
+
+  <section class="summary" aria-label="Summary">
+    <div><span class="label">Watching</span><span class="num" id="s-count">0</span></div>
+    <div><span class="label">At or below target</span><span class="num" id="s-hits">0</span></div>
+    <div><span class="label">Last check</span><span class="num" id="s-last" style="font-size:15px">Not yet</span></div>
+  </section>
+
+  <section class="list" id="list" aria-live="polite">
+    <div class="empty" id="empty">
+      <strong id="empty-title">Loading prices…</strong>
+      <span id="empty-text">Products appear here once they're added to products.json and the daily check has run.</span>
+    </div>
+  </section>
+
+  <footer>
+    <span>To add a product, edit <span class="mono">products.json</span> in this site's GitHub repository. Each entry is a link, plus an optional name and target price. Saving the file starts a price check straight away.</span>
+    <span>Prices are read from each store's product page, so a store that changes its layout or blocks automated visits may show "Couldn't read price".</span>
+  </footer>
+</div>
+
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const listEl = $("list"), emptyEl = $("empty");
+
+  const money = (v, cur) => {
+    if (v == null || isNaN(v)) return "—";
+    try { return new Intl.NumberFormat(undefined, { style: "currency", currency: cur || "USD" }).format(v); }
+    catch (e) { return (cur ? cur + " " : "") + Number(v).toFixed(2); }
+  };
+  const ago = (iso) => {
+    if (!iso) return "Not yet";
+    const t = new Date(iso); if (isNaN(t)) return "Not yet";
+    const mins = Math.round((Date.now() - t) / 60000);
+    if (mins < 60) return mins <= 1 ? "Just now" : mins + " min ago";
+    const h = Math.round(mins / 60); if (h < 36) return h + " h ago";
+    return t.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  };
+  const host = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch (e) { return ""; } };
+  const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
+
+  function spark(history) {
+    const pts = (history || []).filter((h) => typeof h.p === "number").slice(-60);
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("viewBox", "0 0 300 44"); svg.setAttribute("preserveAspectRatio", "none");
+    svg.setAttribute("role", "img");
+    if (pts.length < 2) {
+      svg.setAttribute("aria-label", "Not enough history for a chart yet");
+      const ln = document.createElementNS(NS, "line");
+      ln.setAttribute("x1", "0"); ln.setAttribute("x2", "300"); ln.setAttribute("y1", "38"); ln.setAttribute("y2", "38");
+      ln.setAttribute("stroke", "var(--line)"); ln.setAttribute("stroke-dasharray", "4 4");
+      svg.appendChild(ln); return svg;
+    }
+    const ps = pts.map((h) => h.p), lo = Math.min(...ps), hi = Math.max(...ps), span = hi - lo || 1;
+    const x = (i) => 4 + (i / (pts.length - 1)) * 292, y = (p) => 38 - ((p - lo) / span) * 32;
+    const d = pts.map((h, i) => (i ? "L" : "M") + x(i).toFixed(1) + " " + y(h.p).toFixed(1)).join(" ");
+    const area = document.createElementNS(NS, "path");
+    area.setAttribute("d", d + " L" + x(pts.length - 1).toFixed(1) + " 44 L" + x(0).toFixed(1) + " 44 Z");
+    area.setAttribute("fill", "var(--accent)"); area.setAttribute("fill-opacity", "0.1");
+    const line = document.createElementNS(NS, "path");
+    line.setAttribute("d", d); line.setAttribute("fill", "none"); line.setAttribute("stroke", "var(--accent)");
+    line.setAttribute("stroke-width", "2"); line.setAttribute("vector-effect", "non-scaling-stroke");
+    const dot = document.createElementNS(NS, "circle");
+    dot.setAttribute("cx", x(pts.length - 1)); dot.setAttribute("cy", y(ps[ps.length - 1])); dot.setAttribute("r", "3.5");
+    dot.setAttribute("fill", "var(--accent)");
+    svg.setAttribute("aria-label", "Price history, " + pts.length + " checks");
+    svg.append(area, line, dot); return svg;
+  }
+
+  function render(data) {
+    const all = data.products || {};
+    const order = (data.order || []).filter((u) => all[u]);
+    for (const u of Object.keys(all)) if (!order.includes(u)) order.push(u);
+    emptyEl.hidden = order.length > 0;
+    if (!order.length) {
+      $("empty-title").textContent = "No products yet.";
+      $("empty-text").textContent = "Add product links to products.json in the GitHub repository. The first prices show up a minute or two after you save it.";
+    }
+    let hits = 0;
+    for (const url of order) {
+      const p = all[url];
+      const price = typeof p.price === "number" ? p.price : null;
+      const prev = typeof p.prevPrice === "number" ? p.prevPrice : null;
+      const target = typeof p.target === "number" ? p.target : null;
+      const hit = price != null && target != null && price <= target;
+      if (hit) hits++;
+
+      const card = el("article", "item" + (hit ? " hit" : ""));
+      const meta = el("div", "meta");
+      meta.appendChild(el("div", "name", p.name || host(url) || "Untitled product"));
+      const store = el("div", "store");
+      const a = el("a", null, p.store || host(url)); a.href = url; a.target = "_blank"; a.rel = "noopener";
+      store.append(a, document.createTextNode(" · checked " + ago(p.lastChecked).toLowerCase()));
+      meta.appendChild(store);
+      const pills = el("div", "pills");
+      if (hit) pills.appendChild(el("span", "pill hit", "At target"));
+      if (price != null && prev != null && price !== prev) {
+        const diff = price - prev, pct = Math.abs(diff / prev * 100).toFixed(1);
+        pills.appendChild(el("span", "pill " + (diff < 0 ? "down" : "up"), (diff < 0 ? "▼ " : "▲ ") + money(Math.abs(diff), p.currency) + " (" + pct + "%)"));
+      }
+      if (p.status === "error") pills.appendChild(el("span", "pill err", "Couldn't read price"));
+      if (target != null) pills.appendChild(el("span", "pill", "Target " + money(target, p.currency)));
+      meta.appendChild(pills);
+
+      const pr = el("div", "price");
+      pr.appendChild(el("span", "now" + (price == null ? " none" : ""), price == null ? "No price yet" : money(price, p.currency)));
+      if (prev != null && prev !== price) pr.appendChild(el("span", "was", "was " + money(prev, p.currency)));
+      card.append(meta, pr);
+
+      const sp = el("div", "spark");
+      sp.appendChild(spark(p.history));
+      const hp = (p.history || []).map((h) => h.p).filter((v) => typeof v === "number");
+      sp.appendChild(el("span", "range num", hp.length ? "Low " + money(Math.min(...hp), p.currency) + " · High " + money(Math.max(...hp), p.currency) : "No history yet"));
+      card.appendChild(sp);
+      listEl.appendChild(card);
+    }
+    $("s-count").textContent = order.length;
+    $("s-hits").textContent = hits;
+    $("s-last").textContent = ago(data.lastRun);
+  }
+
+  fetch("data.json?t=" + Date.now(), { cache: "no-store" })
+    .then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); })
+    .then(render)
+    .catch(() => {
+      $("empty-title").textContent = "Couldn't load prices.";
+      $("empty-text").textContent = "data.json is missing or unreadable. Reload the page, or check the latest run in the repository's Actions tab.";
+    });
+})();
+</script>
+</body>
+</html>

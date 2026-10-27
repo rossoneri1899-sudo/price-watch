@@ -1,0 +1,38 @@
+name: Check prices
+
+on:
+  schedule:
+    - cron: "0 13 * * *"   # 13:00 UTC every day; change the hour to suit your time zone
+  workflow_dispatch:        # lets you run it from the Actions tab
+  push:
+    paths: ["products.json"] # check right away when you add or change a product
+
+permissions:
+  contents: write
+
+concurrency:
+  group: check-prices
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check prices
+        env:
+          PRICE_WATCH_GMAIL: ${{ secrets.PRICE_WATCH_GMAIL }}
+          PRICE_WATCH_APP_PASS: ${{ secrets.PRICE_WATCH_APP_PASS }}
+          PRICE_WATCH_TO: ${{ secrets.PRICE_WATCH_TO }}
+          PRICE_WATCH_SITE: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+        run: python scripts/check_prices.py
+      - name: Save results
+        run: |
+          git config user.name "price-watch-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data.json
+          git diff --cached --quiet || git commit -m "Update prices"
+          git push
