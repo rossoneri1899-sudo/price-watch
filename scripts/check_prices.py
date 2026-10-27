@@ -21,6 +21,7 @@ import os
 import re
 import smtplib
 import sys
+import urllib.error
 import urllib.request
 import zlib
 from datetime import datetime, timedelta, timezone
@@ -175,9 +176,22 @@ def send_email(alerts):
     print(f"Alert email sent to {to}.")
 
 
+def supabase_base() -> str:
+    """Accept the project URL in the forms people paste: the API URL, the
+    dashboard link, a bare project ref, or with /rest/v1 on the end."""
+    raw = os.environ["SUPABASE_URL"].strip().strip('"').rstrip("/")
+    m = re.search(r"supabase\.com/dashboard/project/([a-z0-9]+)", raw)
+    if m:
+        return f"https://{m.group(1)}.supabase.co"
+    if re.fullmatch(r"[a-z0-9]{20}", raw):
+        return f"https://{raw}.supabase.co"
+    raw = re.sub(r"/rest/v1.*$", "", raw)
+    return raw if raw.startswith("http") else f"https://{raw}"
+
+
 def supabase(method: str, path: str, body=None):
-    base = os.environ["SUPABASE_URL"].rstrip("/")
-    key = os.environ["SUPABASE_SECRET_KEY"]
+    base = supabase_base()
+    key = os.environ["SUPABASE_SECRET_KEY"].strip()
     headers = {"apikey": key, "Content-Type": "application/json", "Prefer": "return=minimal"}
     if not key.startswith("sb_"):  # legacy service_role JWT keys also need a bearer header
         headers["Authorization"] = f"Bearer {key}"
@@ -196,7 +210,12 @@ def parse_time(value):
 
 
 def main() -> int:
-    rows = supabase("GET", "products?select=*&order=created_at.asc") or []
+    try:
+        rows = supabase("GET", "products?select=*&order=created_at.asc") or []
+    except urllib.error.HTTPError as e:
+        hint = {401: "check the SUPABASE_SECRET_KEY secret", 404: "check the SUPABASE_URL secret"}.get(e.code, "")
+        print(f"Couldn't read products from {supabase_base()}: HTTP {e.code}. {hint}")
+        return 1
     now = datetime.now(timezone.utc)
     today = now.strftime("%Y-%m-%d")
     alerts, checked = [], 0
