@@ -21,7 +21,7 @@ const CONCURRENCY = 4;
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "apikey, authorization, content-type, x-client-info",
+  "Access-Control-Allow-Headers": "apikey, authorization, content-type, x-client-info, x-cron-token",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
@@ -236,8 +236,19 @@ Deno.serve(async (req) => {
     testEmail = String(body.testEmail ?? "").trim();
     if (typeof body.site === "string" && /^https:\/\/[^\s]{1,200}$/.test(body.site)) siteUrl = body.site;
   } catch { /* empty body */ }
-  const ok = await db("rpc/verify_code", { method: "POST", body: JSON.stringify({ code }), headers: { Prefer: "" } });
-  if (ok !== true) return json({ error: "wrong invite code" }, 403);
+  // The daily schedule (schedule.sql) sends a token kept in Supabase Vault
+  // instead of the invite code, and runs the check only at 9 AM Pacific.
+  const cronToken = req.headers.get("x-cron-token");
+  if (cronToken) {
+    const valid = await db("rpc/verify_cron_token", { method: "POST", body: JSON.stringify({ t: cronToken }), headers: { Prefer: "" } });
+    if (valid !== true) return json({ error: "bad schedule token" }, 403);
+    const laHour = Number(new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", hour: "numeric", hourCycle: "h23" }).format(new Date()));
+    if (laHour !== 9) return json({ skipped: `not 9 AM in Los Angeles (it's ${laHour}:00)` });
+    testEmail = "";
+  } else {
+    const ok = await db("rpc/verify_code", { method: "POST", body: JSON.stringify({ code }), headers: { Prefer: "" } });
+    if (ok !== true) return json({ error: "wrong invite code" }, 403);
+  }
 
   if (testEmail) {
     if (!EMAIL_RE.test(testEmail) || testEmail.length > 254) return json({ ok: false, error: "That email address doesn't look right." });
